@@ -1,4 +1,6 @@
 //! QOI format based on the specification from https://qoiformat.org/qoi-specification.pdf
+//! To use the Encoder and Decoder, a Pixel struct (As parameter PType) with the functions init, get, getRGBABytes, getRGBBytes, eq, and zero are required.
+//! See RGBAPixel for the minimum implementation.
 const std = @import("std");
 
 /// Byte format is `LSB = first letter` to `MSB = last letter`.
@@ -317,7 +319,7 @@ pub const Decoder = struct {
     }
 };
 ///Test Encoder/Decoder internally if all operations and pixel data are the same.
-pub fn TestEqualityP(PType: type) type {
+fn TestEqualityP(PType: type) type {
     return struct {
         const allocator = std.testing.allocator;
         const OP = enum { rgb, rgba, run, index, diff, luma };
