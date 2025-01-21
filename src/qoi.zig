@@ -6,8 +6,8 @@ const std = @import("std");
 /// Format is not part of the QOI format. It is used for encoding/decoding pixels by different ordering.
 pub const Format = enum(u8) { rgba, abgr, bgra, argb };
 
-pub const RGBA = extern struct { r: u8, g: u8, b: u8, a: u8 };
 pub const Pixel = extern union {
+    pub const RGBA = extern struct { r: u8, g: u8, b: u8, a: u8 };
     pub const ARGB = extern struct { a: u8, r: u8, g: u8, b: u8 };
     pub const BGRA = extern struct { b: u8, g: u8, r: u8, a: u8 };
     pub const ABGR = extern struct { a: u8, b: u8, g: u8, r: u8 };
@@ -58,27 +58,27 @@ pub const Pixel = extern union {
         return .{ .raw = 0 };
     }
 };
-///Encoder and Decoder requires a struct with init, get, getRGBABytes, getRGBBytes, eq, and zero
+///Encoder and Decoder requires a struct with the functions init, get, getRGBABytes, getRGBBytes, eq, and zero.
 pub const RGBAPixel = extern union {
-    rgba: RGBA,
+    rgba: Pixel.RGBA,
     array: [4]u8,
     raw: u32,
     pub fn init(_: Format, r: u8, g: u8, b: u8, a: u8) RGBAPixel {
         return .{ .rgba = .{ .r = r, .g = g, .b = b, .a = a } };
     }
-    pub inline fn get(self: RGBAPixel, _: Format, comptime p: []const u8) u8 {
+    pub fn get(self: RGBAPixel, _: Format, comptime p: []const u8) u8 {
         return @field(self.rgba, p);
     }
-    pub inline fn getRGBABytes(self: RGBAPixel, _: Format) [4]u8 {
+    pub fn getRGBABytes(self: RGBAPixel, _: Format) [4]u8 {
         return self.array;
     }
-    pub inline fn getRGBBytes(self: RGBAPixel, _: Format) [3]u8 {
+    pub fn getRGBBytes(self: RGBAPixel, _: Format) [3]u8 {
         return [_]u8{ self.rgba.r, self.rgba.g, self.rgba.b };
     }
-    pub inline fn eq(self: RGBAPixel, other: RGBAPixel) bool {
+    pub fn eq(self: RGBAPixel, other: RGBAPixel) bool {
         return self.raw == other.raw;
     }
-    pub inline fn zero() RGBAPixel {
+    pub fn zero() RGBAPixel {
         return .{ .raw = 0 };
     }
 };
@@ -115,7 +115,7 @@ fn seen_hash(comptime PType: type, p: PType, format: Format) u8 {
 }
 pub const Encoder = struct {
     pub const Error = error{DimensionsMismatchPixelsLength};
-    ///PType as Pixel data structure. See `RGBAPixel` for minimum requirements.
+    ///PType as a Pixel data structure. See `RGBAPixel` for minimum requirements.
     pub fn encode(comptime PType: type, writer: std.io.AnyWriter, format: Format, data: *const Data(PType)) !void {
         TestEqualityP(PType).add_expected_data(data);
         const w_times_h: usize = @as(usize, @intCast(data.width)) * @as(usize, @intCast(data.height));
@@ -202,7 +202,7 @@ pub const Decoder = struct {
         ReadingMorePixels,
         MissingEndBytes,
     };
-    ///PType as Pixel data structure. See `RGBAPixel` for minimum requirements.
+    ///PType as a Pixel data structure. See `RGBAPixel` for minimum requirements.
     pub fn decode(comptime PType: type, reader: std.io.AnyReader, allocator: std.mem.Allocator, format: Format) !Data(PType) {
         const qoif_magic: u32 = @bitCast(try reader.readBytesNoEof(4));
         if (qoif_magic != @as(u32, @bitCast([4]u8{ 'q', 'o', 'i', 'f' }))) return Error.InvalidQOIHeader;
@@ -219,88 +219,94 @@ pub const Decoder = struct {
         var pixels_seen: [64]PType = [1]PType{PType.zero()} ** 64;
         var found_end: bool = false;
         while (reader.readByte()) |byte| {
-            if (byte == OP_RGB) {
-                if (pixels_list.items.len == w_times_h) return Error.ReadingMorePixels;
-                try TestEqualityP(PType).check_op(.rgb);
-                const r = try reader.readByte();
-                const g = try reader.readByte();
-                const b = try reader.readByte();
-                const px = PType.init(format, r, g, b, last_pixel.get(format, "a"));
-                pixels_list.items.len += 1;
-                pixels_list.items[pixels_list.items.len - 1] = px;
-                last_pixel = px;
-                pixels_seen[seen_hash(PType, last_pixel, format)] = px;
-            } else if (byte == OP_RGBA) {
-                if (pixels_list.items.len == w_times_h) return Error.ReadingMorePixels;
-                try TestEqualityP(PType).check_op(.rgba);
-                const r = try reader.readByte();
-                const g = try reader.readByte();
-                const b = try reader.readByte();
-                const a = try reader.readByte();
-                const px = PType.init(format, r, g, b, a);
-                pixels_list.items.len += 1;
-                pixels_list.items[pixels_list.items.len - 1] = px;
-                last_pixel = px;
-                pixels_seen[seen_hash(PType, last_pixel, format)] = px;
-            } else if (byte & (0b11 << 6) == OP_RUN_TAG) {
-                const run_num = (byte & 0b00111111) + 1;
-                if (pixels_list.items.len + run_num > w_times_h) return Error.ReadingMorePixels;
-                try TestEqualityP(PType).check_op(.run);
-                pixels_list.items.len += run_num;
-                @memset(pixels_list.items[pixels_list.items.len - run_num .. pixels_list.items.len], last_pixel);
-            } else if (byte & (0b11 << 6) == OP_INDEX_TAG) {
-                if (pixels_list.items.len == w_times_h) {
-                    //Check for u8{0,0,0,0,0,0,0,1} ending
-                    if (byte == 0) {
-                        const last_bytes: [7]u8 = reader.readBytesNoEof(7) catch return Error.MissingEndBytes;
-                        if (std.mem.eql(u8, &last_bytes, &([1]u8{0} ** 6 ++ [1]u8{1}))) {
-                            found_end = true;
-                            break;
-                        } else return Error.MissingEndBytes;
-                    } else return Error.MissingEndBytes;
-                }
-                try TestEqualityP(PType).check_op(.index);
-                last_pixel = pixels_seen[byte];
-                pixels_list.items.len += 1;
-                pixels_list.items[pixels_list.items.len - 1] = last_pixel;
-            } else if (byte & (0b11 << 6) == OP_DIFF_TAG) {
-                if (pixels_list.items.len == w_times_h) return Error.ReadingMorePixels;
-                try TestEqualityP(PType).check_op(.diff);
-                const dr: u8 = ((byte >> 4) & 0b00000011) -% 2;
-                const dg: u8 = ((byte >> 2) & 0b00000011) -% 2;
-                const db: u8 = (byte & 0b00000011) -% 2;
-                const rgba = last_pixel.getRGBABytes(format);
-                const px = PType.init(
-                    format,
-                    rgba[0] +% dr,
-                    rgba[1] +% dg,
-                    rgba[2] +% db,
-                    rgba[3],
-                );
-                pixels_list.items.len += 1;
-                pixels_list.items[pixels_list.items.len - 1] = px;
-                last_pixel = px;
-                pixels_seen[seen_hash(PType, last_pixel, format)] = px;
-            } else //if (byte & (0b11 << 6) == OP_LUMA_TAG) {
-            {
-                if (pixels_list.items.len == w_times_h) return Error.ReadingMorePixels;
-                try TestEqualityP(PType).check_op(.luma);
-                const byte2: u8 = try reader.readByte();
-                const dg: u8 = (byte & 0b00111111) -% 32;
-                const drmdg: u8 = ((byte2 & 0b11110000) >> 4) -% 8;
-                const dbmdg: u8 = (byte2 & 0b00001111) -% 8;
-                const rgba = last_pixel.getRGBABytes(format);
-                const px = PType.init(
-                    format,
-                    rgba[0] +% drmdg +% dg,
-                    rgba[1] +% dg,
-                    rgba[2] +% dbmdg +% dg,
-                    rgba[3],
-                );
-                pixels_list.items.len += 1;
-                pixels_list.items[pixels_list.items.len - 1] = px;
-                last_pixel = px;
-                pixels_seen[seen_hash(PType, last_pixel, format)] = px;
+            switch (byte) {
+                OP_RGB => {
+                    if (pixels_list.items.len == w_times_h) return Error.ReadingMorePixels;
+                    try TestEqualityP(PType).check_op(.rgb);
+                    const r = try reader.readByte();
+                    const g = try reader.readByte();
+                    const b = try reader.readByte();
+                    const px = PType.init(format, r, g, b, last_pixel.get(format, "a"));
+                    pixels_list.items.len += 1;
+                    pixels_list.items[pixels_list.items.len - 1] = px;
+                    last_pixel = px;
+                    pixels_seen[seen_hash(PType, last_pixel, format)] = px;
+                },
+                OP_RGBA => {
+                    if (pixels_list.items.len == w_times_h) return Error.ReadingMorePixels;
+                    try TestEqualityP(PType).check_op(.rgba);
+                    const r = try reader.readByte();
+                    const g = try reader.readByte();
+                    const b = try reader.readByte();
+                    const a = try reader.readByte();
+                    const px = PType.init(format, r, g, b, a);
+                    pixels_list.items.len += 1;
+                    pixels_list.items[pixels_list.items.len - 1] = px;
+                    last_pixel = px;
+                    pixels_seen[seen_hash(PType, last_pixel, format)] = px;
+                },
+                else => {
+                    if (byte & (0b11 << 6) == OP_RUN_TAG) {
+                        const run_num = (byte & 0b00111111) + 1;
+                        if (pixels_list.items.len + run_num > w_times_h) return Error.ReadingMorePixels;
+                        try TestEqualityP(PType).check_op(.run);
+                        pixels_list.items.len += run_num;
+                        @memset(pixels_list.items[pixels_list.items.len - run_num .. pixels_list.items.len], last_pixel);
+                    } else if (byte & (0b11 << 6) == OP_INDEX_TAG) {
+                        if (pixels_list.items.len == w_times_h) {
+                            //Check for u8{0,0,0,0,0,0,0,1} ending
+                            if (byte == 0) {
+                                const last_bytes: [7]u8 = reader.readBytesNoEof(7) catch return Error.MissingEndBytes;
+                                if (std.mem.eql(u8, &last_bytes, &([1]u8{0} ** 6 ++ [1]u8{1}))) {
+                                    found_end = true;
+                                    break;
+                                } else return Error.MissingEndBytes;
+                            } else return Error.MissingEndBytes;
+                        }
+                        try TestEqualityP(PType).check_op(.index);
+                        last_pixel = pixels_seen[byte];
+                        pixels_list.items.len += 1;
+                        pixels_list.items[pixels_list.items.len - 1] = last_pixel;
+                    } else if (byte & (0b11 << 6) == OP_DIFF_TAG) {
+                        if (pixels_list.items.len == w_times_h) return Error.ReadingMorePixels;
+                        try TestEqualityP(PType).check_op(.diff);
+                        const dr: u8 = ((byte >> 4) & 0b00000011) -% 2;
+                        const dg: u8 = ((byte >> 2) & 0b00000011) -% 2;
+                        const db: u8 = (byte & 0b00000011) -% 2;
+                        const rgba = last_pixel.getRGBABytes(format);
+                        const px = PType.init(
+                            format,
+                            rgba[0] +% dr,
+                            rgba[1] +% dg,
+                            rgba[2] +% db,
+                            rgba[3],
+                        );
+                        pixels_list.items.len += 1;
+                        pixels_list.items[pixels_list.items.len - 1] = px;
+                        last_pixel = px;
+                        pixels_seen[seen_hash(PType, last_pixel, format)] = px;
+                    } else //if (byte & (0b11 << 6) == OP_LUMA_TAG) {
+                    {
+                        if (pixels_list.items.len == w_times_h) return Error.ReadingMorePixels;
+                        try TestEqualityP(PType).check_op(.luma);
+                        const byte2: u8 = try reader.readByte();
+                        const dg: u8 = (byte & 0b00111111) -% 32;
+                        const drmdg: u8 = ((byte2 & 0b11110000) >> 4) -% 8;
+                        const dbmdg: u8 = (byte2 & 0b00001111) -% 8;
+                        const rgba = last_pixel.getRGBABytes(format);
+                        const px = PType.init(
+                            format,
+                            rgba[0] +% drmdg +% dg,
+                            rgba[1] +% dg,
+                            rgba[2] +% dbmdg +% dg,
+                            rgba[3],
+                        );
+                        pixels_list.items.len += 1;
+                        pixels_list.items[pixels_list.items.len - 1] = px;
+                        last_pixel = px;
+                        pixels_seen[seen_hash(PType, last_pixel, format)] = px;
+                    }
+                },
             }
         } else |_| {}
         if (!found_end) return error.MissingEndBytes;
@@ -514,7 +520,7 @@ test "Decoder errors" {
 ///Decorator function that counts the execution time of the function AnyFn(AnyFnArgs...).
 ///Use ParentOfAnyFn to get the name of a pub function (optional).
 ///Use time_output to get the nanoseconds passed when calling AnyFn (optional).
-pub fn TimeFn(
+fn TimeFn(
     comptime CallMod: std.builtin.CallModifier,
     comptime AnyFn: anytype,
     comptime ParentOfAnyFn: ?type,

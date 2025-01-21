@@ -5,12 +5,12 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     _ = b.addModule("qoi_converter", .{
-        .root_source_file = b.path("src/lib.zig"),
+        .root_source_file = b.path("src/qoi.zig"),
     });
 
     const exe = b.addExecutable(.{
-        .name = "qoi",
-        .root_source_file = b.path("src/lib.zig"),
+        .name = "qoi_test",
+        .root_source_file = b.path("src/qoi.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -26,7 +26,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const exe_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/lib.zig"),
+        .root_source_file = b.path("src/qoi.zig"),
         .test_runner = b.path("src/test_runner.zig"),
         .target = target,
         .optimize = optimize,
